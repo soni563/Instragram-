@@ -1,117 +1,147 @@
-from flask import Flask, request, render_template, redirect, url_for, flash
 import os
 import time
-import uuid
+from flask import Flask, request, redirect, url_for, flash, render_template_string
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
 
 app = Flask(__name__)
-app.secret_key = 'your-secret-key'
-app.debug = True
+app.config["UPLOAD_FOLDER"] = "uploads"
+app.secret_key = "your_secret_key"
 
-# Folder to store uploaded files temporarily
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-HTML_TEMPLATE = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Instagram Messaging Bot</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.0/dist/css/bootstrap.min.css" rel="stylesheet">
-  <style>
-    body {
-      background-color: #f8f9fa;
-      font-family: Arial, sans-serif;
-    }
-    .container {
-      max-width: 500px;
-      background-color: #fff;
-      border-radius: 10px;
-      padding: 20px;
-      margin: 0 auto;
-      margin-top: 50px;
-      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1 class="text-center">Instagram Messaging Bot</h1>
-    <form action="/" method="POST" enctype="multipart/form-data">
-      <div class="mb-3">
-        <label for="username" class="form-label">Instagram Username:</label>
-        <input type="text" class="form-control" id="username" name="username" required>
-      </div>
-      <div class="mb-3">
-        <label for="password" class="form-label">Instagram Password:</label>
-        <input type="password" class="form-control" id="password" name="password" required>
-      </div>
-      <div class="mb-3">
-        <label for="target_group" class="form-label">Target Chat Group or Inbox:</label>
-        <input type="text" class="form-control" id="target_group" name="target_group" required>
-      </div>
-      <div class="mb-3">
-        <label for="haters_name" class="form-label">Hater's Name:</label>
-        <input type="text" class="form-control" id="haters_name" name="haters_name" required>
-      </div>
-      <div class="mb-3">
-        <label for="txt_file" class="form-label">Message File (.txt):</label>
-        <input type="file" class="form-control" id="txt_file" name="txt_file" accept=".txt" required>
-      </div>
-      <div class="mb-3">
-        <label for="delay" class="form-label">Delay Between Messages (in seconds):</label>
-        <input type="number" class="form-control" id="delay" name="delay" min="1" required>
-      </div>
-      <button type="submit" class="btn btn-primary w-100">Send Messages</button>
-    </form>
-  </div>
-</body>
-</html>
-'''
-
-@app.route('/', methods=['GET', 'POST'])
-def home():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        target_group = request.form.get('target_group')
-        haters_name = request.form.get('haters_name')
-        delay = int(request.form.get('delay'))
-        txt_file = request.files['txt_file']
-
-        # Save the uploaded file securely
-        unique_filename = f"{uuid.uuid4()}.txt"
-        file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
-        txt_file.save(file_path)
-
-        # Read the messages from the file
-        try:
-            with open(file_path, 'r') as file:
-                messages = file.read().splitlines()
-        except Exception as e:
-            flash(f"Error reading the file: {e}", "danger")
-            return redirect(url_for('home'))
-
-        # Mock sending messages
-        try:
-            for message in messages:
-                full_message = f"{haters_name}: {message}"
-                print(f"Sending to {target_group}: {full_message}")
-                time.sleep(delay)
-        except Exception as e:
-            flash(f"Error sending messages: {e}", "danger")
-            return redirect(url_for('home'))
-        finally:
-            # Clean up uploaded file
-            os.remove(file_path)
-
-        flash(f"Messages successfully sent to {target_group}.", "success")
-        return redirect(url_for('home'))
-
-    return HTML_TEMPLATE
+# Ensure upload folder exists
+if not os.path.exists(app.config["UPLOAD_FOLDER"]):
+    os.makedirs(app.config["UPLOAD_FOLDER"])
 
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
-  
+def instagram_login(username, password):
+    """Logs into Instagram using Selenium"""
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless")  # Run without opening a browser
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+    driver.get("https://www.instagram.com/accounts/login/")
+    time.sleep(5)
+
+    try:
+        user_input = driver.find_element(By.NAME, "username")
+        pass_input = driver.find_element(By.NAME, "password")
+        login_button = driver.find_element(By.XPATH, "//button[@type='submit']")
+
+        user_input.send_keys(username)
+        pass_input.send_keys(password)
+        login_button.click()
+        time.sleep(5)
+
+        if "challenge" in driver.current_url:
+            flash("Instagram login requires verification. Please log in manually first.", "danger")
+            driver.quit()
+            return None
+
+        return driver
+    except Exception as e:
+        flash(f"Login error: {e}", "danger")
+        driver.quit()
+        return None
+
+
+def send_message(driver, thread_id, message, delay):
+    """Sends a message to a specific Instagram thread"""
+    try:
+        driver.get(f"https://www.instagram.com/direct/t/{thread_id}/")
+        time.sleep(5)
+
+        message_box = driver.find_element(By.XPATH, "//textarea[contains(@placeholder, 'Message...')]")
+        message_box.send_keys(message)
+        time.sleep(delay)
+        message_box.send_keys(Keys.RETURN)
+        flash("Message sent successfully!", "success")
+    except Exception as e:
+        flash(f"Error sending message: {e}", "danger")
+    finally:
+        driver.quit()
+
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        username = request.form["username"]
+        password = request.form["password"]
+        thread_id = request.form["thread_id"]
+        delay = int(request.form["delay"])
+
+        uploaded_file = request.files["file"]
+        if uploaded_file.filename == "":
+            flash("No file selected!", "danger")
+            return redirect(url_for("index"))
+
+        file_path = os.path.join(app.config["UPLOAD_FOLDER"], uploaded_file.filename)
+        uploaded_file.save(file_path)
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            message = f.read().strip()
+
+        driver = instagram_login(username, password)
+        if driver:
+            send_message(driver, thread_id, message, delay)
+
+        return redirect(url_for("index"))
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Instagram Auto Messenger</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h2 class="text-center">Instagram Auto Messenger</h2>
+
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    <div class="mt-3">
+                        {% for category, message in messages %}
+                            <div class="alert alert-{{ category }}">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+
+            <form action="/" method="POST" enctype="multipart/form-data">
+                <div class="mb-3">
+                    <label class="form-label">Instagram Username</label>
+                    <input type="text" name="username" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Instagram Password</label>
+                    <input type="password" name="password" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Target Thread ID</label>
+                    <input type="text" name="thread_id" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Message File (TXT)</label>
+                    <input type="file" name="file" class="form-control" accept=".txt" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Delay (seconds)</label>
+                    <input type="number" name="delay" class="form-control" min="1" value="3" required>
+                </div>
+                <button type="submit" class="btn btn-primary w-100">Send Message</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    """)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host="0.0.0.0", port=port)
+    
