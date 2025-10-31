@@ -1,147 +1,164 @@
-import os
+from flask import Flask, request, render_template_string
+from instagrapi import Client
 import time
-from flask import Flask, request, redirect, url_for, flash, render_template_string
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
 
 app = Flask(__name__)
-app.config["UPLOAD_FOLDER"] = "uploads"
-app.secret_key = "your_secret_key"
 
-# Ensure upload folder exists
-if not os.path.exists(app.config["UPLOAD_FOLDER"]):
-    os.makedirs(app.config["UPLOAD_FOLDER"])
+# HTML template for the web page
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Instagram Automation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #1e1e2f;
+            color: #fff;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .container {
+            background-color: #2e2e3e;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            max-width: 400px;
+            width: 100%;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        label {
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            background-color: #ff5722;
+            color: #fff;
+            font-weight: bold;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #e64a19;
+        }
+        .info {
+            font-size: 12px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Instagram Automation</h1>
+        <form action="/" method="POST" enctype="multipart/form-data">
+            <label for="username">Instagram Username:</label>
+            <input type="text" id="username" name="username" placeholder="Enter Instagram username" required>
 
+            <label for="password">Instagram Password:</label>
+            <input type="password" id="password" name="password" placeholder="Enter Instagram password" required>
 
+            <label for="choice">Send To:</label>
+            <select id="choice" name="choice" required>
+                <option value="inbox">Inbox</option>
+                <option value="group">Group</option>
+            </select>
+
+            <label for="target_username">Target Username (for Inbox):</label>
+            <input type="text" id="target_username" name="target_username" placeholder="Enter target username">
+
+            <label for="thread_id">Thread ID (for Group):</label>
+            <input type="text" id="thread_id" name="thread_id" placeholder="Enter group thread ID">
+
+            <label for="haters_name">Hater's Name:</label>
+            <input type="text" id="haters_name" name="haters_name" placeholder="Enter hater's name" required>
+
+            <label for="message_file">Message File:</label>
+            <input type="file" id="message_file" name="message_file" accept=".txt" required>
+            <p class="info">Upload a TXT file with one message per line.</p>
+
+            <label for="delay">Delay (in seconds):</label>
+            <input type="number" id="delay" name="delay" placeholder="Enter delay in seconds" required>
+
+            <button type="submit">Send Messages</button>
+        </form>
+    </div>
+</body>
+</html>
+'''
+
+# Function to log in to Instagram
 def instagram_login(username, password):
-    """Logs into Instagram using Selenium"""
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")  # Run without opening a browser
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-
-    driver.get("https://www.instagram.com/accounts/login/")
-    time.sleep(5)
-
     try:
-        user_input = driver.find_element(By.NAME, "username")
-        pass_input = driver.find_element(By.NAME, "password")
-        login_button = driver.find_element(By.XPATH, "//button[@type='submit']")
-
-        user_input.send_keys(username)
-        pass_input.send_keys(password)
-        login_button.click()
-        time.sleep(5)
-
-        if "challenge" in driver.current_url:
-            flash("Instagram login requires verification. Please log in manually first.", "danger")
-            driver.quit()
-            return None
-
-        return driver
+        client = Client()
+        client.login(username, password)
+        print("[SUCCESS] Logged in successfully.")
+        return client
     except Exception as e:
-        flash(f"Login error: {e}", "danger")
-        driver.quit()
+        print(f"[ERROR] Login failed: {e}")
         return None
 
-
-def send_message(driver, thread_id, message, delay):
-    """Sends a message to a specific Instagram thread"""
+# Function to send messages
+def send_messages(client, choice, target_username, thread_id, messages, delay):
     try:
-        driver.get(f"https://www.instagram.com/direct/t/{thread_id}/")
-        time.sleep(5)
-
-        message_box = driver.find_element(By.XPATH, "//textarea[contains(@placeholder, 'Message...')]")
-        message_box.send_keys(message)
-        time.sleep(delay)
-        message_box.send_keys(Keys.RETURN)
-        flash("Message sent successfully!", "success")
+        if choice == "inbox":
+            user_id = client.user_id_from_username(target_username)
+            for message in messages:
+                client.direct_send(message, [user_id])
+                print(f"[SUCCESS] Sent message to {target_username}: {message}")
+                time.sleep(delay)
+        elif choice == "group":
+            for message in messages:
+                client.direct_send(message, thread_id=thread_id)
+                print(f"[SUCCESS] Sent message to group {thread_id}: {message}")
+                time.sleep(delay)
     except Exception as e:
-        flash(f"Error sending message: {e}", "danger")
-    finally:
-        driver.quit()
-
+        print(f"[ERROR] Failed to send messages: {e}")
 
 @app.route("/", methods=["GET", "POST"])
-def index():
+def home():
     if request.method == "POST":
-        username = request.form["username"]
-        password = request.form["password"]
-        thread_id = request.form["thread_id"]
-        delay = int(request.form["delay"])
+        username = request.form.get("username")
+        password = request.form.get("password")
+        choice = request.form.get("choice")
+        target_username = request.form.get("target_username")
+        thread_id = request.form.get("thread_id")
+        haters_name = request.form.get("haters_name")
+        delay = int(request.form.get("delay"))
+        message_file = request.files["message_file"]
 
-        uploaded_file = request.files["file"]
-        if uploaded_file.filename == "":
-            flash("No file selected!", "danger")
-            return redirect(url_for("index"))
+        # Read messages from the uploaded file
+        try:
+            messages = [f"{haters_name}: {line.strip()}" for line in message_file.read().decode("utf-8").splitlines()]
+        except Exception as e:
+            return f"<p>Error reading file: {e}</p>"
 
-        file_path = os.path.join(app.config["UPLOAD_FOLDER"], uploaded_file.filename)
-        uploaded_file.save(file_path)
+        # Log in to Instagram
+        client = instagram_login(username, password)
+        if not client:
+            return "<p>Login failed. Please check your credentials and try again.</p>"
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            message = f.read().strip()
+        # Send messages
+        send_messages(client, choice, target_username, thread_id, messages, delay)
+        return "<p>Messages sent successfully!</p>"
 
-        driver = instagram_login(username, password)
-        if driver:
-            send_message(driver, thread_id, message, delay)
-
-        return redirect(url_for("index"))
-
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Instagram Auto Messenger</title>
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-    </head>
-    <body>
-        <div class="container mt-5">
-            <h2 class="text-center">Instagram Auto Messenger</h2>
-
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    <div class="mt-3">
-                        {% for category, message in messages %}
-                            <div class="alert alert-{{ category }}">{{ message }}</div>
-                        {% endfor %}
-                    </div>
-                {% endif %}
-            {% endwith %}
-
-            <form action="/" method="POST" enctype="multipart/form-data">
-                <div class="mb-3">
-                    <label class="form-label">Instagram Username</label>
-                    <input type="text" name="username" class="form-control" required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Instagram Password</label>
-                    <input type="password" name="password" class="form-control" required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Target Thread ID</label>
-                    <input type="text" name="thread_id" class="form-control" required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Message File (TXT)</label>
-                    <input type="file" name="file" class="form-control" accept=".txt" required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Delay (seconds)</label>
-                    <input type="number" name="delay" class="form-control" min="1" value="3" required>
-                </div>
-                <button type="submit" class="btn btn-primary w-100">Send Message</button>
-            </form>
-        </div>
-    </body>
-    </html>
-    """)
-
+    return render_template_string(HTML_TEMPLATE)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(debug=True, host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000, debug=True)
     
